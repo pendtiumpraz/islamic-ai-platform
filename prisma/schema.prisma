@@ -1,0 +1,556 @@
+// Prisma Schema for Tahfidz.ai
+// Multi-tenant Islamic Memorization Platform
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ===========================================
+// TENANT & USER MANAGEMENT
+// ===========================================
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  email     String
+  phone     String?
+  logoUrl   String?  @map("logo_url")
+
+  // Subscription
+  plan              String    @default("free")
+  maxUsers          Int       @default(5) @map("max_users")
+  subscriptionStart DateTime? @map("subscription_start")
+  subscriptionEnd   DateTime? @map("subscription_end")
+
+  // API Key (encrypted)
+  geminiApiKeyEncrypted String? @map("gemini_api_key_encrypted")
+
+  // Custom Domain
+  customDomain         String?  @unique @map("custom_domain")
+  customDomainVerified Boolean  @default(false) @map("custom_domain_verified")
+
+  // Settings
+  settings Json @default("{}")
+
+  // Timestamps
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by")
+
+  // Relations
+  users         User[]
+  halaqahs      Halaqah[]
+  subscriptions Subscription[]
+  apiUsage      ApiUsage[]
+
+  @@index([slug])
+  @@index([deletedAt])
+  @@map("tenants")
+}
+
+model User {
+  id       String  @id @default(cuid())
+  tenantId String? @map("tenant_id")
+
+  // Auth
+  email        String?
+  phone        String?
+  passwordHash String? @map("password_hash")
+
+  // Profile
+  fullName  String  @map("full_name")
+  avatarUrl String? @map("avatar_url")
+  role      String  @default("user") // super_admin, tenant_admin, user
+
+  // BYOK (for unlimited tier)
+  geminiApiKeyEncrypted String? @map("gemini_api_key_encrypted")
+
+  // Status
+  isActive      Boolean @default(true) @map("is_active")
+  emailVerified Boolean @default(false) @map("email_verified")
+  phoneVerified Boolean @default(false) @map("phone_verified")
+
+  // Timestamps
+  lastLoginAt DateTime? @map("last_login_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt   DateTime? @map("deleted_at")
+  deletedBy   String?   @map("deleted_by")
+
+  // Relations
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id])
+  refreshTokens      RefreshToken[]
+  halaqahMemberships HalaqahMember[]
+  hafalanProgress    HafalanProgress[]
+  setoran            Setoran[]
+  murojaahSchedule   MurojaahSchedule[]
+  apiUsage           ApiUsage[]
+  badges             UserBadge[]
+  auditLogs          AuditLog[]         @relation("performer")
+
+  @@unique([tenantId, email])
+  @@index([email])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+// ===========================================
+// AUTHENTICATION
+// ===========================================
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model RegistrationAttempt {
+  id                String   @id @default(cuid())
+  ipAddress         String   @map("ip_address")
+  deviceFingerprint String?  @map("device_fingerprint")
+  email             String?
+  phone             String?
+  status            String   @default("pending") // pending, verified, blocked, expired
+  turnstileToken    String?  @map("turnstile_token")
+
+  // Tracking
+  attemptCount  Int       @default(1) @map("attempt_count")
+  lastAttemptAt DateTime  @default(now()) @map("last_attempt_at")
+  verifiedAt    DateTime? @map("verified_at")
+  blockedReason String?   @map("blocked_reason")
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  expiresAt DateTime @map("expires_at")
+
+  @@index([ipAddress])
+  @@index([deviceFingerprint])
+  @@index([status])
+  @@map("registration_attempts")
+}
+
+model DeviceFingerprint {
+  id          String   @id @default(cuid())
+  fingerprint String   @unique
+  userId      String?  @map("user_id")
+  ipAddresses String[] @map("ip_addresses")
+  userAgent   String?  @map("user_agent")
+  
+  firstSeenAt DateTime  @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime  @default(now()) @map("last_seen_at")
+  isBlocked   Boolean   @default(false) @map("is_blocked")
+  blockReason String?   @map("block_reason")
+
+  @@index([fingerprint])
+  @@map("device_fingerprints")
+}
+
+model Blocklist {
+  id        String    @id @default(cuid())
+  type      String    // ip, device, email_domain, phone_prefix
+  value     String
+  reason    String?
+  blockedBy String?   @map("blocked_by")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@unique([type, value])
+  @@map("blocklist")
+}
+
+// ===========================================
+// SUBSCRIPTION & BILLING
+// ===========================================
+
+model Subscription {
+  id       String @id @default(cuid())
+  tenantId String @map("tenant_id")
+
+  plan        String
+  priceAmount Decimal  @map("price_amount") @db.Decimal(12, 2)
+  currency    String   @default("IDR")
+  status      String   // active, cancelled, expired
+
+  startedAt   DateTime? @map("started_at")
+  expiresAt   DateTime? @map("expires_at")
+  cancelledAt DateTime? @map("cancelled_at")
+
+  // Payment
+  paymentMethod    String? @map("payment_method")
+  paymentReference String? @map("payment_reference")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("subscriptions")
+}
+
+model ApiUsage {
+  id       String @id @default(cuid())
+  tenantId String @map("tenant_id")
+  userId   String @map("user_id")
+
+  date         DateTime @db.Date
+  requestCount Int      @default(0) @map("request_count")
+  tokenInput   Int      @default(0) @map("token_input")
+  tokenOutput  Int      @default(0) @map("token_output")
+  apiKeySource String?  @map("api_key_source") // platform, tenant, user
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId, date])
+  @@map("api_usage")
+}
+
+// ===========================================
+// HALAQAH (STUDY GROUPS)
+// ===========================================
+
+model Halaqah {
+  id          String  @id @default(cuid())
+  tenantId    String  @map("tenant_id")
+  name        String
+  description String?
+  type        String  @default("quran") // quran, hadits, matan, mixed
+  musyrifId   String? @map("musyrif_id")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+  deletedBy String?   @map("deleted_by")
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id])
+  members HalaqahMember[]
+  setoran Setoran[]
+
+  @@index([tenantId])
+  @@map("halaqah")
+}
+
+model HalaqahMember {
+  id        String   @id @default(cuid())
+  halaqahId String   @map("halaqah_id")
+  userId    String   @map("user_id")
+  role      String   @default("santri") // musyrif, santri
+  joinedAt  DateTime @default(now()) @map("joined_at")
+
+  halaqah Halaqah @relation(fields: [halaqahId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([halaqahId, userId])
+  @@map("halaqah_members")
+}
+
+// ===========================================
+// CONTENT (QURAN, HADITS, MATAN)
+// ===========================================
+
+model QuranSurah {
+  id              Int     @id
+  nameArabic      String  @map("name_arabic")
+  nameSimple      String  @map("name_simple")
+  nameTranslation String  @map("name_translation")
+  revelationType  String  @map("revelation_type") // meccan, medinan
+  versesCount     Int     @map("verses_count")
+
+  ayahs QuranAyah[]
+
+  @@map("quran_surah")
+}
+
+model QuranAyah {
+  id            Int     @id @default(autoincrement())
+  surahNumber   Int     @map("surah_number")
+  ayahNumber    Int     @map("ayah_number")
+  textUthmani   String  @map("text_uthmani")
+  textSimple    String? @map("text_simple")
+  translationId String? @map("translation_id")
+  audioUrl      String? @map("audio_url")
+  pageNumber    Int?    @map("page_number")
+  juzNumber     Int?    @map("juz_number")
+
+  surah QuranSurah @relation(fields: [surahNumber], references: [id])
+
+  @@unique([surahNumber, ayahNumber])
+  @@index([juzNumber])
+  @@map("quran_ayah")
+}
+
+model HaditsKitab {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  nameAr      String? @map("name_ar")
+  nameId      String  @map("name_id")
+  author      String?
+  totalHadits Int?    @map("total_hadits")
+  level       String? // pemula, menengah, lanjutan
+  description String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  hadits Hadits[]
+
+  @@map("hadits_kitab")
+}
+
+model Hadits {
+  id          String  @id @default(cuid())
+  kitabId     String  @map("kitab_id")
+  haditsNumber Int    @map("hadits_number")
+  babNumber   Int?    @map("bab_number")
+  babName     String? @map("bab_name")
+
+  textAr      String  @map("text_ar")
+  textId      String? @map("text_id")
+  rawi        String?
+  takhrij     String?
+  derajat     String? // shahih, hasan, dhaif
+  syarahBrief String? @map("syarah_brief")
+  fawaid      Json?
+  audioUrl    String? @map("audio_url")
+
+  kitab HaditsKitab @relation(fields: [kitabId], references: [id])
+
+  @@unique([kitabId, haditsNumber])
+  @@map("hadits")
+}
+
+model MatanKitab {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  nameAr      String? @map("name_ar")
+  nameId      String  @map("name_id")
+  author      String?
+  category    String? // tajwid, nahwu, shorof, fiqih, aqidah
+  totalBait   Int?    @map("total_bait")
+  isNazham    Boolean @default(true) @map("is_nazham")
+  level       String?
+  description String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  baits MatanBait[]
+
+  @@map("matan_kitab")
+}
+
+model MatanBait {
+  id         String  @id @default(cuid())
+  kitabId    String  @map("kitab_id")
+  baitNumber Int     @map("bait_number")
+  babNumber  Int?    @map("bab_number")
+  babName    String? @map("bab_name")
+
+  textAr   String  @map("text_ar")
+  textId   String? @map("text_id")
+  syarah   String?
+  audioUrl String? @map("audio_url")
+
+  kitab MatanKitab @relation(fields: [kitabId], references: [id])
+
+  @@unique([kitabId, baitNumber])
+  @@map("matan_bait")
+}
+
+// ===========================================
+// HAFALAN SYSTEM
+// ===========================================
+
+model HafalanProgress {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  hafalanType String @map("hafalan_type") // quran, hadits, matan
+
+  // For Quran
+  surahNumber Int? @map("surah_number")
+  ayahStart   Int? @map("ayah_start")
+  ayahEnd     Int? @map("ayah_end")
+
+  // For Hadits
+  haditsKitabId String? @map("hadits_kitab_id")
+  haditsStart   Int?    @map("hadits_start")
+  haditsEnd     Int?    @map("hadits_end")
+
+  // For Matan
+  matanKitabId String? @map("matan_kitab_id")
+  baitStart    Int?    @map("bait_start")
+  baitEnd      Int?    @map("bait_end")
+
+  // Progress
+  status      String    @default("memorizing") // memorizing, reviewing, mastered
+  memorizedAt DateTime? @map("memorized_at")
+
+  // Spaced Repetition
+  easeFactor  Decimal   @default(2.5) @map("ease_factor") @db.Decimal(3, 2)
+  intervalDays Int      @default(1) @map("interval_days")
+  repetitions Int       @default(0)
+  nextReview  DateTime? @map("next_review")
+  lastReview  DateTime? @map("last_review")
+  lastScore   Int?      @map("last_score")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([hafalanType])
+  @@index([nextReview])
+  @@map("hafalan_progress")
+}
+
+model Setoran {
+  id        String  @id @default(cuid())
+  userId    String  @map("user_id")
+  halaqahId String? @map("halaqah_id")
+
+  hafalanType String @map("hafalan_type") // quran, hadits, matan
+
+  // For Quran
+  surahNumber Int? @map("surah_number")
+  ayahStart   Int? @map("ayah_start")
+  ayahEnd     Int? @map("ayah_end")
+
+  // For Hadits
+  haditsKitabId String? @map("hadits_kitab_id")
+  haditsStart   Int?    @map("hadits_start")
+  haditsEnd     Int?    @map("hadits_end")
+
+  // For Matan
+  matanKitabId String? @map("matan_kitab_id")
+  baitStart    Int?    @map("bait_start")
+  baitEnd      Int?    @map("bait_end")
+
+  // AI Analysis Results
+  aiScore            Int?    @map("ai_score")
+  aiGrade            String? @map("ai_grade") // mumtaz, jayyid_jiddan, jayyid, maqbul, rasib
+  aiTranscription    String? @map("ai_transcription")
+  aiSummary          String? @map("ai_summary")
+  aiFeedbackAudioUrl String? @map("ai_feedback_audio_url")
+  aiItemComments     Json?   @map("ai_item_comments")
+  aiErrors           Json?   @map("ai_errors")
+  aiSuggestions      Json?   @map("ai_suggestions")
+
+  // Continue or Retry?
+  canContinue Boolean @default(false) @map("can_continue")
+  nextStart   Int?    @map("next_start")
+
+  // Musyrif Review
+  musyrifId    String?   @map("musyrif_id")
+  musyrifScore Int?      @map("musyrif_score")
+  musyrifNotes String?   @map("musyrif_notes")
+  status       String    @default("completed") // completed, needs_review, reviewed
+  reviewedAt   DateTime? @map("reviewed_at")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user    User     @relation(fields: [userId], references: [id])
+  halaqah Halaqah? @relation(fields: [halaqahId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+  @@map("setoran")
+}
+
+model MurojaahSchedule {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  hafalanType String @map("hafalan_type")
+
+  // For Quran
+  surahNumber Int? @map("surah_number")
+  ayahStart   Int? @map("ayah_start")
+  ayahEnd     Int? @map("ayah_end")
+
+  // For Hadits
+  haditsKitabId String? @map("hadits_kitab_id")
+  haditsStart   Int?    @map("hadits_start")
+  haditsEnd     Int?    @map("hadits_end")
+
+  // For Matan
+  matanKitabId String? @map("matan_kitab_id")
+  baitStart    Int?    @map("bait_start")
+  baitEnd      Int?    @map("bait_end")
+
+  // Schedule
+  scheduledDate DateTime  @map("scheduled_date") @db.Date
+  completed     Boolean   @default(false)
+  score         Int?
+  completedAt   DateTime? @map("completed_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, scheduledDate])
+  @@map("murojaah_schedule")
+}
+
+// ===========================================
+// GAMIFICATION
+// ===========================================
+
+model Badge {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String
+  icon        String?
+  category    String  // quran, hadits, matan, general
+  requirement Json    // conditions to earn
+
+  userBadges UserBadge[]
+
+  @@map("badges")
+}
+
+model UserBadge {
+  id       String   @id @default(cuid())
+  userId   String   @map("user_id")
+  badgeId  String   @map("badge_id")
+  earnedAt DateTime @default(now()) @map("earned_at")
+
+  user  User  @relation(fields: [userId], references: [id])
+  badge Badge @relation(fields: [badgeId], references: [id])
+
+  @@unique([userId, badgeId])
+  @@map("user_badges")
+}
+
+// ===========================================
+// AUDIT LOG
+// ===========================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  action      String   // SOFT_DELETE_TENANT, RESTORE_TENANT, etc
+  targetType  String   @map("target_type") // tenant, user, halaqah
+  targetId    String   @map("target_id")
+  performedBy String   @map("performed_by")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  performer User @relation("performer", fields: [performedBy], references: [id])
+
+  @@index([targetType, targetId])
+  @@index([performedBy])
+  @@map("audit_logs")
+}
