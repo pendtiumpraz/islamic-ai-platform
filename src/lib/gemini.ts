@@ -2,7 +2,16 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { SetoranResult, HafalanType, SetoranItemComment, SetoranError } from '@/types';
 import { getGrade, canContinue } from '@/types';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+
+if (!GEMINI_API_KEY) {
+  console.warn('WARNING: GEMINI_API_KEY is not set. AI features will not work.');
+}
+
+const genAI = new GoogleGenerativeAI(GEMINI_API_KEY || 'dummy-key');
+
+// Use stable model
+const GEMINI_MODEL = 'gemini-1.5-flash';
 
 const SETORAN_SYSTEM_PROMPT = `Anda adalah seorang ahli hafalan Al-Quran, Hadits, dan Matan yang berpengalaman. 
 Tugas Anda adalah mengevaluasi bacaan/hafalan santri dengan detail dan konstruktif.
@@ -31,7 +40,11 @@ export interface AnalyzeSetoranParams {
 export async function analyzeSetoran(params: AnalyzeSetoranParams): Promise<SetoranResult> {
   const { hafalanType, expectedText, transcription, referenceInfo } = params;
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY tidak dikonfigurasi. Hubungi admin.');
+  }
+
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
   const typeLabel = {
     quran: 'Al-Quran',
@@ -143,7 +156,11 @@ export async function transcribeAudio(
   audioBase64: string,
   mimeType: string = 'audio/wav'
 ): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY tidak dikonfigurasi. Hubungi admin.');
+  }
+
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
   const prompt = `Transkripsikan audio bacaan Al-Quran/Hadits/Matan berikut ke dalam teks Arab.
 Tulis persis seperti yang didengar, termasuk jika ada kesalahan atau pengulangan.
@@ -170,7 +187,11 @@ Hanya berikan teks transkrip tanpa penjelasan tambahan.`;
 
 // AI Ustadz - General Islamic Q&A
 export async function askAIUstadz(question: string): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY tidak dikonfigurasi. Hubungi admin.');
+  }
+
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
   const prompt = `Anda adalah seorang ustadz/ustadzah yang berpengetahuan luas tentang Islam.
 Jawab pertanyaan berikut dengan bijaksana, berdasarkan Al-Quran, Hadits, dan pendapat ulama.
